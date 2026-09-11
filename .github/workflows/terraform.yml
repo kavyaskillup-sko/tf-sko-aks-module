@@ -1,7 +1,7 @@
 name: Terraform Azure Infra
 
-# Manual-only trigger: choose the environment, the pipeline runs
-# init -> validate -> plan automatically, and apply only after an
+# Manual-only trigger: separate init -> validate -> plan stages run
+# automatically, and apply runs the exact reviewed plan only after an
 # approver signs off via the environment's required-reviewers gate.
 on:
   workflow_dispatch:
@@ -25,10 +25,12 @@ env:
   ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
   ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
   ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+  INIT_ARTIFACT: tf-init-${{ inputs.environment }}-${{ github.run_id }}
+  PLAN_ARTIFACT: tf-plan-${{ inputs.environment }}-${{ github.run_id }}
 
 jobs:
-  plan:
-    name: Init, Validate & Plan (${{ inputs.environment }})
+  init:
+    name: 1. Terraform Init (${{ inputs.environment }})
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -41,6 +43,36 @@ jobs:
 
       - name: Terraform Init
         run: terraform init -backend-config="envs/${{ inputs.environment }}/backend.hcl" -reconfigure
+
+      # Archive the whole workspace (incl. .terraform/ providers + lockfile)
+      # so later stages don't need Azure credentials just to re-init.
+      - name: Archive workspace
+        run: tar -czf workspace.tar.gz --exclude=workspace.tar.gz .
+
+      - name: Upload workspace artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.INIT_ARTIFACT }}
+          path: workspace.tar.gz
+          retention-days: 1
+
+  validate:
+    name: 2. Terraform Validate (${{ inputs.environment }})
+    needs: init
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download workspace artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.INIT_ARTIFACT }}
+
+      - name: Extract workspace
+        run: tar -xzf workspace.tar.gz
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
 
       - name: Terraform Format Check
         run: terraform fmt -check -recursive
@@ -48,47 +80,70 @@ jobs:
       - name: Terraform Validate
         run: terraform validate
 
-      - name: Terraform Plan
-        id: plan
-        run: |
-          terraform plan \
-            -var-file="envs/${{ inputs.environment }}/terraform.tfvars" \
-            -out=tfplan \
-            -no-color | tee plan.txt
-
-      - name: Upload plan artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: tfplan-${{ inputs.environment }}-${{ github.run_id }}
-          path: |
-            tfplan
-            plan.txt
-          retention-days: 5
-
-  apply:
-    name: Approve & Apply (${{ inputs.environment }})
-    needs: plan
+  plan:
+    name: 3. Terraform Plan (${{ inputs.environment }})
+    needs: validate
     runs-on: ubuntu-latest
-    # Maps to a GitHub Environment named dev/uat/prod. Configure required
-    # reviewers on each environment (Settings > Environments) so a senior
-    # engineer must approve before this job is allowed to run.
-    environment: ${{ inputs.environment }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - name: Download workspace artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.INIT_ARTIFACT }}
+
+      - name: Extract workspace
+        run: tar -xzf workspace.tar.gz
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: ${{ env.TF_VERSION }}
 
-      - name: Terraform Init
-        run: terraform init -backend-config="envs/${{ inputs.environment }}/backend.hcl" -reconfigure
+      - name: Terraform Plan
+        run: |
+          terraform plan \
+            -var-file="envs/${{ inputs.environment }}/terraform.tfvars" \
+            -out=tfplan \
+            -no-color | tee plan.txt
 
-      - name: Download plan artifact
+      - name: Upload human-readable plan (for review)
+        uses: actions/upload-artifact@v4
+        with:
+          name: plan-output-${{ inputs.environment }}-${{ github.run_id }}
+          path: plan.txt
+          retention-days: 5
+
+      - name: Archive workspace with plan
+        run: tar -czf workspace.tar.gz --exclude=workspace.tar.gz .
+
+      - name: Upload plan workspace artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.PLAN_ARTIFACT }}
+          path: workspace.tar.gz
+          retention-days: 5
+
+  apply:
+    name: 4. Approve & Apply (${{ inputs.environment }})
+    needs: plan
+    runs-on: ubuntu-latest
+    # Maps to a GitHub Environment named dev/uat/prod. Configure required
+    # reviewers on each environment (Settings > Environments) so a senior
+    # engineer must review the plan artifact/logs and approve before this
+    # job is allowed to run.
+    environment: ${{ inputs.environment }}
+    steps:
+      - name: Download plan workspace artifact
         uses: actions/download-artifact@v4
         with:
-          name: tfplan-${{ inputs.environment }}-${{ github.run_id }}
+          name: ${{ env.PLAN_ARTIFACT }}
+
+      - name: Extract workspace
+        run: tar -xzf workspace.tar.gz
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
 
       - name: Terraform Apply
         run: terraform apply -auto-approve tfplan
