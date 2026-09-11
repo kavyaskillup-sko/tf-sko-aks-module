@@ -1,0 +1,94 @@
+name: Terraform Azure Infra
+
+# Manual-only trigger: choose the environment, the pipeline runs
+# init -> validate -> plan automatically, and apply only after an
+# approver signs off via the environment's required-reviewers gate.
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Target environment"
+        required: true
+        type: choice
+        options:
+          - dev
+          - uat
+          - prod
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  TF_VERSION: "1.7.5"
+  ARM_USE_OIDC: "true"
+  ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+  ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+  ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+jobs:
+  plan:
+    name: Init, Validate & Plan (${{ inputs.environment }})
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Terraform Init
+        run: terraform init -backend-config="envs/${{ inputs.environment }}/backend.hcl" -reconfigure
+
+      - name: Terraform Format Check
+        run: terraform fmt -check -recursive
+
+      - name: Terraform Validate
+        run: terraform validate
+
+      - name: Terraform Plan
+        id: plan
+        run: |
+          terraform plan \
+            -var-file="envs/${{ inputs.environment }}/terraform.tfvars" \
+            -out=tfplan \
+            -no-color | tee plan.txt
+
+      - name: Upload plan artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tfplan-${{ inputs.environment }}-${{ github.run_id }}
+          path: |
+            tfplan
+            plan.txt
+          retention-days: 5
+
+  apply:
+    name: Approve & Apply (${{ inputs.environment }})
+    needs: plan
+    runs-on: ubuntu-latest
+    # Maps to a GitHub Environment named dev/uat/prod. Configure required
+    # reviewers on each environment (Settings > Environments) so a senior
+    # engineer must approve before this job is allowed to run.
+    environment: ${{ inputs.environment }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Terraform Init
+        run: terraform init -backend-config="envs/${{ inputs.environment }}/backend.hcl" -reconfigure
+
+      - name: Download plan artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: tfplan-${{ inputs.environment }}-${{ github.run_id }}
+
+      - name: Terraform Apply
+        run: terraform apply -auto-approve tfplan
