@@ -21,10 +21,6 @@ permissions:
 
 env:
   TF_VERSION: "1.7.5"
-  ARM_USE_OIDC: "true"
-  ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
-  ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
-  ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
   INIT_ARTIFACT: tf-init-${{ inputs.environment }}-${{ github.run_id }}
   PLAN_ARTIFACT: tf-plan-${{ inputs.environment }}-${{ github.run_id }}
 
@@ -32,6 +28,14 @@ jobs:
   init:
     name: 1. Terraform Init (${{ inputs.environment }})
     runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      ARM_USE_OIDC: "true"
+      ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -60,6 +64,14 @@ jobs:
     name: 2. Terraform Validate (${{ inputs.environment }})
     needs: init
     runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      ARM_USE_OIDC: "true"
+      ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
     steps:
       - name: Download workspace artifact
         uses: actions/download-artifact@v4
@@ -84,6 +96,14 @@ jobs:
     name: 3. Terraform Plan (${{ inputs.environment }})
     needs: validate
     runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      ARM_USE_OIDC: "true"
+      ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
     steps:
       - name: Download workspace artifact
         uses: actions/download-artifact@v4
@@ -126,11 +146,19 @@ jobs:
     name: 4. Approve & Apply (${{ inputs.environment }})
     needs: plan
     runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
     # Maps to a GitHub Environment named dev/uat/prod. Configure required
     # reviewers on each environment (Settings > Environments) so a senior
     # engineer must review the plan artifact/logs and approve before this
     # job is allowed to run.
     environment: ${{ inputs.environment }}
+    env:
+      ARM_USE_OIDC: "true"
+      ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
     steps:
       - name: Download plan workspace artifact
         uses: actions/download-artifact@v4
